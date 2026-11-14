@@ -1,8 +1,8 @@
-# TerraSeasons: which season is changing fastest in Turkey?
+﻿# TerraSeasons: which season is changing fastest in Turkey?
 
 NASA Space Apps Challenge 2026, challenge "Be an Earth System Trend Detective".
 
-**Live app:** _add the Streamlit link here_
+**Live app:** https://terraseasons-jtgszzrtym5p9r5ue6ar6l.streamlit.app/
 
 TerraSeasons splits Turkey's 1980–2025 climate record into winter, spring, summer and autumn and shows
 how fast **temperature** and **precipitation** are changing in each season, for Turkey and its seven
