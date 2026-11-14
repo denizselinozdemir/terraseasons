@@ -82,8 +82,8 @@ with st.sidebar:
 V = VARS[var_label]
 vkey, unit, slope_unit = V["key"], V["unit"], V["slope"]
 
-tab_over, tab_exp, tab_reg, tab_then, tab_about = st.tabs(
-    ["Overview", "Explore", "Regions", "Then vs now", "About"])
+tab_over, tab_exp, tab_reg, tab_cmp, tab_then, tab_rec, tab_about = st.tabs(
+    ["Overview", "Explore", "Regions", "Compare", "Then vs now", "Records", "About"])
 
 # ------------------------------------------------------------------ Overview
 with tab_over:
@@ -140,6 +140,19 @@ with tab_over:
     plt.close(fig)
     st.caption("Bars show the trend per decade with 95% confidence intervals. An interval that crosses zero "
                "means the data cannot confidently tell the trend from no change.")
+    allt = trends[["degisken", "area", "season", "ortalama", "hac_egim", "hac_ga_alt", "hac_ga_ust", "hac_p",
+                   "BH_p", "anlamli", "kendall_p", "sen_egim"]].rename(
+        columns={"degisken": "variable", "ortalama": "mean", "hac_egim": "trend_per_decade",
+                 "hac_ga_alt": "ci_low", "hac_ga_ust": "ci_high", "hac_p": "hac_p",
+                 "BH_p": "bh_adjusted_p", "anlamli": "significant", "kendall_p": "mann_kendall_p",
+                 "sen_egim": "theil_sen_per_decade"})
+    allt["variable"] = allt["variable"].map({"sicaklik": "temperature_C", "yagis": "precipitation_mm"})
+    report = "# TerraSeasons summary (NASA MERRA-2, 1980-2025)\n\n" + "\n".join("- " + b.replace("**", "") for b in bullets)
+    d1, d2 = st.columns(2)
+    d1.download_button("Download all trend results (CSV)", allt.round(4).to_csv(index=False).encode("utf-8"),
+                       file_name="terraseasons_all_trends.csv", mime="text/csv")
+    d2.download_button("Download key findings (text)", report.encode("utf-8"),
+                       file_name="terraseasons_key_findings.md", mime="text/markdown")
 
 # ------------------------------------------------------------------ Explore
 with tab_exp:
@@ -172,9 +185,13 @@ with tab_exp:
     one = get_series(vkey, area, season)
     y0, y1 = int(one["yil"].min()), int(one["yil"].max())
     yr = c2.slider("Year range", min_value=y0, max_value=y1, value=(y0, y1))
+    show_roll = c2.checkbox("Show 10-year moving average", value=True)
     part = one[one["yil"].between(*yr)]
     fig, ax = plt.subplots(figsize=(10, 4))
     ax.plot(part["yil"], part["deger"], marker="o", markersize=3, linewidth=1.3, label=f"{season} value")
+    if show_roll and len(part) >= 10:
+        ax.plot(part["yil"], part["deger"].rolling(10, center=True, min_periods=6).mean(),
+                linewidth=2.4, alpha=0.9, label="10-year moving average")
     if len(part) > 2:
         slope, icpt = np.polyfit(part["yil"], part["deger"], 1)
         ax.plot(part["yil"], slope * part["yil"] + icpt, linestyle="--", linewidth=2.2, label="Linear trend")
@@ -267,6 +284,60 @@ with tab_then:
     if vkey == "yagis":
         cap = "Each stripe is one year's season relative to that season's 1980–2025 average (brown = drier, green = wetter)."
     st.caption(cap + " Each season has its own colour scale.")
+
+# ------------------------------------------------------------------ Compare
+with tab_cmp:
+    st.subheader(f"Compare two areas: {var_label.lower()} trend per decade")
+    cc1, cc2 = st.columns(2)
+    a_name = cc1.selectbox("Area A", areas, key="cmp_a")
+    b_name = cc2.selectbox("Area B", areas, index=min(1, len(areas) - 1), key="cmp_b")
+    ra = trends[(trends.degisken == vkey) & (trends.area == a_name)].set_index("season").reindex(SEASONS)
+    rb = trends[(trends.degisken == vkey) & (trends.area == b_name)].set_index("season").reindex(SEASONS)
+    fig, ax = plt.subplots(figsize=(9, 4.2))
+    w = 0.38
+    xx = np.arange(4)
+    for off, r, nm in ((-w / 2, ra, a_name), (w / 2, rb, b_name)):
+        v = r["hac_egim"].to_numpy(float)
+        ax.bar(xx + off, v, w, yerr=[v - r["hac_ga_alt"].to_numpy(float), r["hac_ga_ust"].to_numpy(float) - v],
+               capsize=4, label=nm, alpha=0.85)
+    ax.axhline(0, color="k", linewidth=0.8)
+    ax.set_xticks(xx)
+    ax.set_xticklabels(SEASONS)
+    ax.set_ylabel(slope_unit)
+    ax.legend(frameon=False)
+    ax.grid(axis="y", alpha=0.25)
+    fig.tight_layout()
+    st.pyplot(fig)
+    plt.close(fig)
+    va, vb = ra["hac_egim"].to_numpy(float), rb["hac_egim"].to_numpy(float)
+    cmp_tab = pd.DataFrame({"Season": SEASONS, f"A: {a_name}": va, f"B: {b_name}": vb, "Difference (A - B)": va - vb})
+    st.markdown(f"Trend per decade ({slope_unit}):")
+    st.dataframe(cmp_tab.round(3), hide_index=True)
+    st.caption("Error bars are 95% confidence intervals. If two intervals overlap strongly, the difference "
+               "between the areas is not clear from this analysis; no formal test of the difference is done.")
+
+# ------------------------------------------------------------------ Records
+with tab_rec:
+    st.subheader(f"Record seasons: {area}")
+    if vkey == "sicaklik":
+        hi_lab, lo_lab = "Warmest", "Coldest"
+    else:
+        hi_lab, lo_lab = "Wettest", "Driest"
+    season_r = st.radio("Season", SEASONS, key="rec_season", horizontal=True)
+    rs = get_series(vkey, area, season_r)
+    top_hi = rs.nlargest(5, "deger")[["yil", "deger"]].rename(columns={"yil": "Year", "deger": unit})
+    top_lo = rs.nsmallest(5, "deger")[["yil", "deger"]].rename(columns={"yil": "Year", "deger": unit})
+    r1, r2 = st.columns(2)
+    r1.markdown(f"**{hi_lab} 5 {season_r.lower()}s**")
+    r1.dataframe(top_hi.round(2), hide_index=True)
+    r2.markdown(f"**{lo_lab} 5 {season_r.lower()}s**")
+    r2.dataframe(top_lo.round(2), hide_index=True)
+    ten_hi = rs.nlargest(10, "deger")
+    recent = int((ten_hi["yil"] >= 2006).sum())
+    st.markdown(f"Of the 10 {hi_lab.lower()} {season_r.lower()}s in the record, **{recent}** happened in 2006–2025 "
+                f"(that period holds 20 of the {len(rs)} seasons).")
+    st.caption("Records come from a model-based reanalysis and a 46-year window; they describe this dataset, not "
+               "all-time extremes.")
 
 # ------------------------------------------------------------------ About
 with tab_about:
