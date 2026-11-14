@@ -63,6 +63,28 @@ def get_series(vkey, area, season=None):
     return d.sort_values("yil")
 
 
+def interpret(r, vkey, season):
+    """Plain-language sentence for one trend row (all numbers come from the data)."""
+    tr, lo, hi = float(r["hac_egim"]), float(r["hac_ga_alt"]), float(r["hac_ga_ust"])
+    n = int(r["yil_sayisi"])
+    span = tr * (n - 1) / 10.0
+    sig = bool(r["anlamli"])
+    if vkey == "sicaklik":
+        word = "warming" if tr > 0 else "cooling"
+        if sig:
+            return (f"**{season}:** {word} of {tr:+.2f} °C per decade (95% CI {lo:+.2f} to {hi:+.2f}), roughly "
+                    f"{span:+.1f} °C over {n} years. The trend is statistically significant.")
+        return (f"**{season}:** a {tr:+.2f} °C per decade tendency (95% CI {lo:+.2f} to {hi:+.2f}), but the interval "
+                f"includes zero, so it cannot be told apart from natural variability.")
+    pct = float(r["yuzde_on_yil"])
+    word = "wetter" if tr > 0 else "drier"
+    if sig:
+        return (f"**{season}:** getting {word} by {tr:+.1f} mm per decade ({pct:+.1f}% of the seasonal average "
+                f"per decade, 95% CI {lo:+.1f} to {hi:+.1f} mm). The trend is statistically significant.")
+    return (f"**{season}:** {tr:+.1f} mm per decade ({pct:+.1f}% per decade), but the 95% CI ({lo:+.1f} to {hi:+.1f} mm) "
+            f"includes zero, so there is no clear trend; year-to-year variability dominates.")
+
+
 def sig_text(p):
     return "statistically significant" if p < 0.05 else "not statistically significant"
 
@@ -123,6 +145,24 @@ with tab_over:
     for b in bullets:
         st.markdown("- " + b)
 
+    st.subheader("What this means")
+    n_warm = int((tt["hac_p"] < 0.05).sum())
+    spread = float(tt.loc[fast, "hac_egim"] - tt.loc[slow, "hac_egim"])
+    meaning = [
+        f"**Warming is not confined to one season.** {n_warm} of 4 seasons show a statistically significant "
+        f"national warming trend, so the annual warming seen in yearly averages is built from the whole year.",
+        f"**The pace differs by season.** {fast} warms about {spread:.2f} °C per decade faster than {slow}. "
+        "Different seasons affect different things (summer heat for health, energy demand and water use; winter "
+        "temperature for snow, soil moisture and the start of the growing season).",
+        "**Rainfall is the harder signal.** Precipitation varies strongly from year to year, so most seasonal rain "
+        "trends cannot be separated from natural variability in a 46-year record. That does not mean nothing is "
+        "changing; it means this dataset cannot confirm it.",
+        "**Caution.** These are reanalysis results from one dataset. They describe what changed, not why, and they "
+        "should be checked against station observations before local decisions are made.",
+    ]
+    for m in meaning:
+        st.markdown("- " + m)
+
     st.subheader("Turkey at a glance")
     fig, axes = plt.subplots(1, 2, figsize=(11, 3.8))
     for ax, (lab, v, tdf) in zip(axes, (("Temperature", VARS["Temperature"], tt), ("Precipitation", VARS["Precipitation"], tp))):
@@ -179,6 +219,13 @@ with tab_exp:
     st.download_button("Download this table (CSV)", tab.round(4).to_csv(index=False).encode("utf-8"),
                        file_name=f"terraseasons_{vkey}_{area.replace(' ', '_')}.csv", mime="text/csv")
 
+    st.markdown(f"#### What the data say for {area}")
+    for ss in SEASONS:
+        rr = sel.loc[ss].copy()
+        st.markdown("- " + interpret(rr, vkey, ss))
+    if area != "Turkey":
+        st.caption("For regions, 'significant' uses the Benjamini-Hochberg-adjusted p-value (28 tests).")
+
     st.subheader("One season in detail")
     c1, c2 = st.columns([1, 2])
     season = c1.radio("Season", SEASONS)
@@ -234,6 +281,22 @@ with tab_reg:
     plt.close(fig)
     st.caption("* = significant after Benjamini-Hochberg correction for 28 regional tests (7 regions × 4 seasons).")
 
+    st.markdown("#### Reading the map")
+    for ss in SEASONS:
+        col = reg[reg.season == ss]
+        k = int(col["anlamli"].sum())
+        best = col.loc[col["hac_egim"].idxmax()] if vkey == "sicaklik" else col.loc[col["hac_egim"].abs().idxmax()]
+        if vkey == "sicaklik":
+            st.markdown(f"- **{ss}:** {k} of 7 regions show significant warming; the strongest is "
+                        f"**{best['area']}** ({best['hac_egim']:+.2f} °C per decade).")
+        elif k:
+            st.markdown(f"- **{ss}:** {k} of 7 regions show a significant rain change; the largest change is in "
+                        f"**{best['area']}** ({best['hac_egim']:+.1f} mm per decade).")
+        else:
+            st.markdown(f"- **{ss}:** no region shows a rain change that survives multiple-test correction.")
+    st.caption("Regions are compared by trend size and significance only. MERRA-2's grid is coarse, so small regions "
+               "rest on few grid cells.")
+
     st.subheader("Ranking of region-season trends")
     rk = reg[["area", "season", "hac_egim", "hac_ga_alt", "hac_ga_ust", "BH_p", "anlamli"]].copy()
     rk = rk.sort_values("hac_egim", ascending=False)
@@ -264,6 +327,11 @@ with tab_then:
     cols = st.columns(4)
     for c, s in zip(cols, SEASONS):
         c.metric(s, f"{late[s]:.1f} {unit}", f"{diff[s]:+.2f} {unit} vs {EARLY[0]}–{EARLY[1]}")
+    big = diff.abs().idxmax()
+    st.markdown(f"**Reading it:** the largest change between the two periods is in **{big.lower()}** "
+                f"({diff[big]:+.2f} {unit}). " + (
+                    "Every season is warmer in the recent period." if (vkey == "sicaklik" and (diff > 0).all()) else
+                    "The direction of change differs between seasons." if vkey == "yagis" else ""))
     st.caption("The difference between two 20-year averages is a simple, intuitive summary; it is not a significance test.")
 
     st.subheader(f"Seasonal stripes: {area}")
@@ -313,6 +381,18 @@ with tab_cmp:
     cmp_tab = pd.DataFrame({"Season": SEASONS, f"A: {a_name}": va, f"B: {b_name}": vb, "Difference (A - B)": va - vb})
     st.markdown(f"Trend per decade ({slope_unit}):")
     st.dataframe(cmp_tab.round(3), hide_index=True)
+    st.markdown("#### Reading the comparison")
+    for i, ss in enumerate(SEASONS):
+        overlap = not (ra["hac_ga_alt"].iloc[i] > rb["hac_ga_ust"].iloc[i] or rb["hac_ga_alt"].iloc[i] > ra["hac_ga_ust"].iloc[i])
+        if a_name == b_name:
+            break
+        who = a_name if va[i] > vb[i] else b_name
+        if overlap:
+            st.markdown(f"- **{ss}:** the confidence intervals overlap, so the difference between {a_name} and "
+                        f"{b_name} is not clear from this analysis (higher estimate: {who}).")
+        else:
+            st.markdown(f"- **{ss}:** the intervals do not overlap; {who} has the larger trend, which points to a "
+                        f"real difference (informal check, not a formal test).")
     st.caption("Error bars are 95% confidence intervals. If two intervals overlap strongly, the difference "
                "between the areas is not clear from this analysis; no formal test of the difference is done.")
 
